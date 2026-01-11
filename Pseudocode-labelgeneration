@@ -1,0 +1,41 @@
+def generate_labels(patient_data):
+    """
+    Pseudocode for Label Generation Logic.
+    
+    Constraints:
+    - Patient must have > 5 visits.
+    - Split point is chosen randomly after the 3rd visit.
+    """
+    
+    for patient in patient_data:
+        # 1. Filter patients with insufficient history
+        if len(patient.visits) <= 5:
+            continue 
+
+        # 2. Determine random split point (j)
+        # We ensure the model has at least 3 visits of context
+        j = random_integer(min=3, max=len(patient.visits) - 1)
+
+        # 3. Define Input Sequence
+        # History from start up to the split point
+        input_sequence = patient.visits[0 : j]
+
+        # 4. Define Target Labels (Tasks)
+        
+        # Task 1: Next Visit Prediction
+        # The immediate next diagnosis code
+        label_t1 = patient.visits[j + 1].diagnosis_code
+
+        # Task 2: 6-Month Prediction
+        # All diagnosis codes occurring within 6 months after visit j
+        label_t2 = get_diagnoses_within_window(start=j, window="6 months")
+
+        # Task 3: 12-Month Prediction
+        # All diagnosis codes occurring within 12 months after visit j
+        label_t3 = get_diagnoses_within_window(start=j, window="12 months")
+
+        # Task 4: 60-Month Prediction
+        # All diagnosis codes occurring within 60 months after visit j
+        label_t4 = get_diagnoses_within_window(start=j, window="60 months")
+
+        return input_sequence, [label_t1, label_t2, label_t3, label_t4]
