@@ -1,100 +1,111 @@
 import requests
 from bs4 import BeautifulSoup
-import urllib.parse
+import pandas as pd
+import time
+import re
 
-# Define the base URL
-base_url = "https://phenotypes.healthdatagateway.org/phenotypes/?collections=21&page="
+# Configuration
+base_url = "https://phenotypes.healthdatagateway.org"
+list_url_template = "https://phenotypes.healthdatagateway.org/phenotypes/?collections=21&page={}&page_size=3"
 
-# Number of pages to scrape
-num_pages = 16
+phenotypes_to_process = []
 
-# Initialize an empty list to store the URLs
-urls = []
 
-# Iterate through the pages
-for page_num in range(1, num_pages):
-    url = base_url + str(page_num)
+for page_num in range(1, 5): 
+    print(f"Scanning page {page_num}...")
+    
+    # 1. Request the list page
+    response = requests.get(list_url_template.format(page_num))
+    
+    if response.status_code != 200:
+        print(f"Stopping: Failed to load page {page_num}")
+        break
+        
+    # 2. Parse the HTML
+    soup = BeautifulSoup(response.content, "html.parser")
+    
+    # 3. Find all links that look like /phenotypes/PH.../version/.../detail/
+
+    links = soup.find_all('a', href=True)
+    
+    found_on_page = 0
+    for link in links:
+        href = link['href']
+        
+        match = re.search(r'/phenotypes/(PH\d+)/version/(\d+)/detail', href)
+        
+        if match:
+            p_id = match.group(1)
+            p_version = match.group(2)
+            
+            
+            p_name = link.text.strip()
+            
+           
+            if not any(d['id'] == p_id for d in phenotypes_to_process):
+                phenotypes_to_process.append({
+                    'id': p_id,
+                    'version': p_version,
+                    'name': p_name
+                })
+                found_on_page += 1
+
+    print(f"Found {found_on_page} new phenotypes on page {page_num}.")
+    time.sleep(1) 
+
+print(f"\nTotal phenotypes found: {len(phenotypes_to_process)}")
+print(phenotypes_to_process[:5]) 
+
+all_icd_codes = []
+
+print(f"Starting API downloads for {len(phenotypes_to_process)} phenotypes...")
+
+for index, pheno in enumerate(phenotypes_to_process):
+    p_id = pheno['id']
+    p_ver = pheno['version']
+    p_name = pheno['name']
+    
+    # Construct the API URL based on your provided format
+    api_url = f"http://phenotypes.healthdatagateway.org/api/v1/phenotypes/{p_id}/version/{p_ver}/export/codes/?format=json"
     
     try:
-        # Send a GET request to the URL
-        response = requests.get(url)
+        # Request the JSON data directly
+        r = requests.get(api_url)
         
-        # Check if the request was successful (status code 200)
-        if response.status_code == 200:
-            # Parse the HTML content of the page
-            soup = BeautifulSoup(response.text, "html.parser")
+        if r.status_code == 200:
+            data = r.json()
             
-            # Find all anchor tags (<a>) with href attributes
-            href_links = soup.find_all("a", href=True)
+            # The API usually returns a list of all codes (ReadV2, ICD10, etc.)
+            # We need to loop through them and find the ICD10 ones.
             
-            # Extract and add links starting with "/phenotypes/" to the 'urls' list
-            for link in href_links:
-                href = link.get("href")
-                if href.startswith("/phenotypes/"):
-                    # Combine the relative link with the base URL
-                    full_link = urllib.parse.urljoin(url, href)
-                    
-                    # Replace 'detail/' with 'export/codes/'
-                    modified_link = full_link.replace('detail/', 'export/codes/')
-                    urls.append(modified_link)
+            
+            for item in data:
+                # We check common fields for the code type. 
+                # Adjust 'coding_system' or 'vocabulary' if the column name is different in the final Excel.
+                # We convert whole row to string to search for "ICD" if unsure of column name.
+                row_str = str(item).upper()
+                
+                # Check if it looks like an ICD-10 entry
+                
+                
+                # We will save everything that mentions ICD10
+                if "ICD10" in row_str or "ICD-10" in row_str:
+                    item['Disease_Name'] = p_name
+                    item['Phenotype_ID'] = p_id
+                    item['Version'] = p_ver
+                    all_icd_codes.append(item)
                     
         else:
-            print(f"Failed to fetch data from URL: {url}. Status code: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while fetching data from URL {url}: {e}")
+            print(f"Failed to fetch data for {p_id}")
+            
+    except Exception as e:
+        print(f"Error processing {p_id}: {e}")
 
-# Print the collected URLs
-#for url in urls:
-#    print(url)
+    # Progress tracker
+    if (index + 1) % 10 == 0:
+        print(f"Processed {index + 1} phenotypes...")
+    
+    # Small delay to prevent blocking
+    time.sleep(0.5)
 
-# URL to remove
-url_to_remove = 'https://phenotypes.healthdatagateway.org/phenotypes/'
-
-# Remove the specific URL from the list
-urls = [url for url in urls if url != url_to_remove]
-
-
-import pandas as pd
-import requests
-from io import StringIO
-
-# Initialize an empty list to store DataFrames
-dfs = []
-
-# Iterate through the URLs and fetch CSV data
-for url in urls:
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            # Assuming the content is CSV data, parse it into a DataFrame
-            csv_data = response.text
-            df_cc = pd.read_csv(StringIO(csv_data))
-            dfs.append(df_cc)
-        else:
-            print(f"Failed to fetch data from URL: {url}. Status code: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        print(f"An error occurred while fetching data from URL {url}: {e}")
-
-# Concatenate the DataFrames into a single DataFrame
-concatenated_df = pd.concat(dfs, ignore_index=True)
-
-# Print the concatenated DataFrame
-#print(concatenated_df)
-
-columns_to_keep = ['phenotype_id','phenotype_name','concept_id','concept_name','code','coding_system']
-
-concatenated_df_refined = concatenated_df[columns_to_keep]
-
-#ICD10 codes for all pages - ICD10 codes
-
-df_ICD10 = concatenated_df_refined[(concatenated_df_refined.coding_system == 'ICD10 codes')]
-
-df_ICD10 = df_ICD10.drop_duplicates(subset='code')
-df_ICD10_selected = df_ICD10[['phenotype_id', 'code']]
-
-df_ICD10_selected.rename(columns={'phenotype_id': 'Caliber', 'code': 'ICD10'}, inplace=True)
-
-df_ICD10_selected['ICD10'] = df_ICD10_selected['ICD10'].str.replace('.', '')
-
-icd10_to_caliber_map = dict(zip(df_ICD10_selected['ICD10'], df_ICD10_selected['Caliber']))
-df['Caliber'] = df['ICD10'].map(icd10_to_caliber_map)
+print(f"\nFinished! Extracted {len(all_icd_codes)} ICD-10 code entries.")
